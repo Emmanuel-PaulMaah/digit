@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, viewport-fit=cover"
+  />
+  <title>digit</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="left">
+        <button id="startBtn">Start Camera</button>
+        <button id="resetBtn" type="button">Reset State</button>
+        <span id="status">Loading MediaPipe hand model…</span>
+      </div>
+
+      <div class="right legend">
+        <span><b>Move</b>: index finger</span>
+        <span><b>Left click / drag</b>: thumb + index pinch</span>
+        <span><b>Right click</b>: thumb + middle pinch</span>
+        <span><b>Scroll</b>: 2 fingers up + move hand vertically</span>
+        <span><b>Reset / release</b>: thumbs-up</span>
+      </div>
+    </header>
+
+    <main id="stage" class="stage">
+      <video id="webcam" autoplay playsinline muted></video>
+      <canvas id="overlay"></canvas>
+
+      <div id="desktop" class="desktop" aria-label="Interactive browser desktop">
+        <div class="desktop-grid">
+          <button class="file card" data-id="1">
+            <img
+              src="https://images.unsplash.com/photo-1501785888041-af3ef285b470?auto=format&fit=crop&w=1200&q=80"
+              alt="Mountains"
+            />
+            <div class="meta">
+              <div class="title">Mountains</div>
+              <div class="sub">Left click opens</div>
+            </div>
+          </button>
+
+          <button class="file card" data-id="2">
+            <img
+              src="https://images.unsplash.com/photo-1469474968028-56623f02e42e?auto=format&fit=crop&w=1200&q=80"
+              alt="City"
+            />
+            <div class="meta">
+              <div class="title">City</div>
+              <div class="sub">Left click opens</div>
+            </div>
+          </button>
+
+          <button class="file card" data-id="3">
+            <img
+              src="https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=1200&q=80"
+              alt="Forest"
+            />
+            <div class="meta">
+              <div class="title">Forest</div>
+              <div class="sub">Left click opens</div>
+            </div>
+          </button>
+
+          <div class="panel notes" id="notesPanel">
+            <h3>Notes</h3>
+            <p>Use pinch-and-hold on a card to drag it.</p>
+            <p>Right-pinch on a card opens the context menu.</p>
+            <p>Two-finger gesture scrolls this panel.</p>
+            <div class="scrollbox" id="scrollbox">
+              <p>Scroll target area.</p>
+              <p>Lorem ipsum dolor sit amet, consectetur adipiscing elit.</p>
+              <p>Vivamus tempor lorem at erat interdum posuere.</p>
+              <p>Phasellus gravida magna nec risus tristique, in luctus est pretium.</p>
+              <p>Curabitur tincidunt nibh id malesuada tincidunt.</p>
+              <p>Sed dignissim orci ac feugiat accumsan.</p>
+              <p>Aliquam erat volutpat.</p>
+              <p>Morbi a gravida sem.</p>
+              <p>Maecenas suscipit tristique nisi.</p>
+              <p>Integer ac turpis eros.</p>
+              <p>Donec viverra lectus in nisi vulputate, ut posuere justo suscipit.</p>
+              <p>Nullam a luctus augue.</p>
+              <p>Praesent vitae orci at dolor ullamcorper molestie.</p>
+              <p>Suspendisse ut sapien nec tortor cursus scelerisque.</p>
+              <p>Ut commodo dictum feugiat.</p>
+              <p>Fusce pretium dapibus erat, non malesuada est.</p>
+            </div>
+          </div>
+        </div>
+
+        <div id="contextMenu" class="context-menu" aria-hidden="true">
+          <button type="button" data-action="open">Open</button>
+          <button type="button" data-action="rename">Rename</button>
+          <button type="button" data-action="details">Details</button>
+        </div>
+
+        <div id="viewer" class="viewer" aria-hidden="true">
+          <div class="viewer-backdrop"></div>
+          <div class="viewer-card">
+            <button id="closeViewerBtn" class="close-btn" type="button">×</button>
+            <img id="viewerImg" alt="Preview" />
+            <div id="viewerTitle" class="viewer-title"></div>
+          </div>
+        </div>
+
+        <div id="cursor" class="cursor" aria-hidden="true"></div>
+      </div>
+    </main>
+
+    <details class="debug">
+      <summary>Debug</summary>
+      <textarea id="logs" spellcheck="false" readonly></textarea>
+    </details>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
