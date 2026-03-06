@@ -27,8 +27,25 @@ const contextMenu = document.getElementById("contextMenu");
 const scrollbox = document.getElementById("scrollbox");
 const files = Array.from(document.querySelectorAll(".file"));
 
+const hudResolution = document.getElementById("hudResolution");
+const hudFps = document.getElementById("hudFps");
+const hudBrightness = document.getElementById("hudBrightness");
+const hudContrast = document.getElementById("hudContrast");
+const hudSharpness = document.getElementById("hudSharpness");
+const hudJitter = document.getElementById("hudJitter");
+const hudLighting = document.getElementById("hudLighting");
+const hudProfile = document.getElementById("hudProfile");
+
 const overlayCtx = overlay.getContext("2d");
 const drawingUtils = new DrawingUtils(overlayCtx);
+
+// =====================
+// Hidden analysis canvas
+// =====================
+const analysisCanvas = document.createElement("canvas");
+analysisCanvas.width = 160;
+analysisCanvas.height = 120;
+const analysisCtx = analysisCanvas.getContext("2d", { willReadFrequently: true });
 
 // =====================
 // Logging / status
@@ -62,6 +79,11 @@ function distance(a, b) {
   const dx = a.x - b.x;
   const dy = a.y - b.y;
   return Math.hypot(dx, dy);
+}
+
+function avg(nums) {
+  if (!nums.length) return 0;
+  return nums.reduce((s, n) => s + n, 0) / nums.length;
 }
 
 function dispatchMouse(type, clientX, clientY, button = 0, target = null, extra = {}) {
@@ -103,7 +125,6 @@ class OneEuroFilter {
     this.minCutoff = minCutoff;
     this.beta = beta;
     this.dCutoff = dCutoff;
-
     this.xPrev = null;
     this.dxPrev = 0;
     this.tPrev = null;
@@ -152,8 +173,8 @@ class OneEuroFilter {
   }
 }
 
-const xFilter = new OneEuroFilter(60, 0.85, 0.03, 1.0);
-const yFilter = new OneEuroFilter(60, 0.85, 0.03, 1.0);
+const xFilter = new OneEuroFilter();
+const yFilter = new OneEuroFilter();
 const scaleFilter = new OneEuroFilter(60, 0.9, 0.01, 1.0);
 
 // =====================
@@ -163,9 +184,7 @@ let handLandmarker = null;
 let running = false;
 let lastVideoTime = -1;
 let lastSeenMs = 0;
-
-const HAND_LOST_GRACE_MS = 300;
-const HOVER_DWELL_MS = 50;
+let cameraInfoLogged = false;
 
 let hoverCandidate = null;
 let hoverCandidateSince = 0;
@@ -175,7 +194,6 @@ let lastCursorX = 0;
 let lastCursorY = 0;
 let lastT = 0;
 
-// Press / drag / right click state
 let leftPinchActive = false;
 let rightPinchActive = false;
 let scrollActive = false;
@@ -198,69 +216,199 @@ let pressStartY = 0;
 let scrollTarget = null;
 let scrollAnchorY = 0;
 let scrollAccumulator = 0;
-
-// context menu state
 let contextTarget = null;
 
-// =====================
-// Gesture debounce state
-// =====================
 let leftOnCount = 0;
 let leftOffCount = 0;
-
 let rightOnCount = 0;
 let rightOffCount = 0;
-
 let scrollOnCount = 0;
 let scrollOffCount = 0;
-
 let thumbsOnCount = 0;
 let thumbsOffCount = 0;
 
-const LEFT_PINCH_ON = 0.30;
-const LEFT_PINCH_OFF = 0.58;
-const RIGHT_PINCH_ON = 0.34;
-const RIGHT_PINCH_OFF = 0.60;
-
-const ON_FRAMES = 2;
-const OFF_FRAMES = 3;
-
-const SCROLL_ON_FRAMES = 3;
-const SCROLL_OFF_FRAMES = 3;
-
-const THUMBS_ON_FRAMES = 4;
-const THUMBS_OFF_FRAMES = 4;
-
 // =====================
-// Pointer mapping
-// Small real movement => larger on-screen motion
+// Runtime diagnostics
 // =====================
-const ACTIVE_REGION = {
-  left: 0.22,
-  right: 0.78,
-  top: 0.18,
-  bottom: 0.84
+const diagnostics = {
+  actualWidth: 0,
+  actualHeight: 0,
+  fps: 0,
+  brightness: 0,
+  contrast: 0,
+  sharpness: 0,
+  exposureBlackPct: 0,
+  exposureWhitePct: 0,
+  landmarkJitter: 0,
+  lighting: "unknown",
+  profile: "medium"
 };
 
-function mapNormToStage(landmark) {
-  const rect = stage.getBoundingClientRect();
+const frameTimes = [];
+const jitterSamples = [];
 
-  const mx = 1 - landmark.x; // mirror X
-  const my = landmark.y;
+let lastDiagnosticsAt = 0;
+const DIAGNOSTICS_INTERVAL_MS = 300;
 
-  const nx = clamp((mx - ACTIVE_REGION.left) / (ACTIVE_REGION.right - ACTIVE_REGION.left), 0, 1);
-  const ny = clamp((my - ACTIVE_REGION.top) / (ACTIVE_REGION.bottom - ACTIVE_REGION.top), 0, 1);
+let lastLandmarksForJitter = null;
 
-  const x = nx * rect.width;
-  const y = ny * rect.height;
+// =====================
+// Adaptive profiles
+// =====================
+const activeRegionBase = {
+  left: 0.26,
+  right: 0.74,
+  top: 0.20,
+  bottom: 0.82
+};
 
-  return { x, y };
+const adaptive = {
+  profileName: "medium",
+  xMinCutoff: 1.7,
+  yMinCutoff: 1.7,
+  xBeta: 0.08,
+  yBeta: 0.08,
+  gainX: 1.25,
+  gainY: 1.22,
+  leftPinchOn: 0.30,
+  leftPinchOff: 0.56,
+  rightPinchOn: 0.34,
+  rightPinchOff: 0.58,
+  onFrames: 2,
+  offFrames: 3,
+  scrollOnFrames: 3,
+  scrollOffFrames: 3,
+  thumbsOnFrames: 4,
+  thumbsOffFrames: 4,
+  hoverDwellMs: 45,
+  handLostGraceMs: 300,
+  scrollMultiplier: 1.7
+};
+
+function applyAdaptiveProfile(name) {
+  adaptive.profileName = name;
+
+  if (name === "good") {
+    adaptive.xMinCutoff = 2.8;
+    adaptive.yMinCutoff = 2.8;
+    adaptive.xBeta = 0.12;
+    adaptive.yBeta = 0.12;
+    adaptive.gainX = 1.48;
+    adaptive.gainY = 1.42;
+    adaptive.leftPinchOn = 0.29;
+    adaptive.leftPinchOff = 0.54;
+    adaptive.rightPinchOn = 0.33;
+    adaptive.rightPinchOff = 0.56;
+    adaptive.onFrames = 1;
+    adaptive.offFrames = 2;
+    adaptive.scrollOnFrames = 2;
+    adaptive.scrollOffFrames = 2;
+    adaptive.thumbsOnFrames = 3;
+    adaptive.thumbsOffFrames = 3;
+    adaptive.hoverDwellMs = 28;
+    adaptive.handLostGraceMs = 220;
+    adaptive.scrollMultiplier = 2.1;
+  } else if (name === "medium") {
+    adaptive.xMinCutoff = 1.9;
+    adaptive.yMinCutoff = 1.9;
+    adaptive.xBeta = 0.09;
+    adaptive.yBeta = 0.09;
+    adaptive.gainX = 1.34;
+    adaptive.gainY = 1.30;
+    adaptive.leftPinchOn = 0.30;
+    adaptive.leftPinchOff = 0.56;
+    adaptive.rightPinchOn = 0.34;
+    adaptive.rightPinchOff = 0.58;
+    adaptive.onFrames = 2;
+    adaptive.offFrames = 3;
+    adaptive.scrollOnFrames = 3;
+    adaptive.scrollOffFrames = 3;
+    adaptive.thumbsOnFrames = 4;
+    adaptive.thumbsOffFrames = 4;
+    adaptive.hoverDwellMs = 42;
+    adaptive.handLostGraceMs = 320;
+    adaptive.scrollMultiplier = 1.7;
+  } else {
+    adaptive.xMinCutoff = 1.1;
+    adaptive.yMinCutoff = 1.1;
+    adaptive.xBeta = 0.05;
+    adaptive.yBeta = 0.05;
+    adaptive.gainX = 1.16;
+    adaptive.gainY = 1.14;
+    adaptive.leftPinchOn = 0.32;
+    adaptive.leftPinchOff = 0.61;
+    adaptive.rightPinchOn = 0.36;
+    adaptive.rightPinchOff = 0.62;
+    adaptive.onFrames = 3;
+    adaptive.offFrames = 4;
+    adaptive.scrollOnFrames = 4;
+    adaptive.scrollOffFrames = 4;
+    adaptive.thumbsOnFrames = 5;
+    adaptive.thumbsOffFrames = 5;
+    adaptive.hoverDwellMs = 65;
+    adaptive.handLostGraceMs = 460;
+    adaptive.scrollMultiplier = 1.2;
+  }
+
+  xFilter.minCutoff = adaptive.xMinCutoff;
+  yFilter.minCutoff = adaptive.yMinCutoff;
+  xFilter.beta = adaptive.xBeta;
+  yFilter.beta = adaptive.yBeta;
+
+  diagnostics.profile = name;
 }
 
+applyAdaptiveProfile("medium");
+
+// =====================
+// Mapping
+// =====================
 function resizeOverlay() {
   const rect = stage.getBoundingClientRect();
   overlay.width = Math.round(rect.width);
   overlay.height = Math.round(rect.height);
+}
+
+function getAdaptiveActiveRegion() {
+  const cx = 0.5;
+  const cy = 0.5;
+
+  const widthBase = activeRegionBase.right - activeRegionBase.left;
+  const heightBase = activeRegionBase.bottom - activeRegionBase.top;
+
+  const width = clamp(widthBase / adaptive.gainX, 0.28, 0.52);
+  const height = clamp(heightBase / adaptive.gainY, 0.28, 0.56);
+
+  return {
+    left: cx - width / 2,
+    right: cx + width / 2,
+    top: cy - height / 2,
+    bottom: cy + height / 2
+  };
+}
+
+function mapNormToStage(landmark) {
+  const rect = stage.getBoundingClientRect();
+  const region = getAdaptiveActiveRegion();
+
+  const mx = 1 - landmark.x;
+  const my = landmark.y;
+
+  const nx = clamp((mx - region.left) / (region.right - region.left), 0, 1);
+  const ny = clamp((my - region.top) / (region.bottom - region.top), 0, 1);
+
+  return {
+    x: nx * rect.width,
+    y: ny * rect.height
+  };
+}
+
+function stageToClient(x, y) {
+  const rect = stage.getBoundingClientRect();
+  return {
+    clientX: rect.left + x,
+    clientY: rect.top + y
+  };
 }
 
 // =====================
@@ -296,14 +444,6 @@ function updateCursorPose(x, y) {
   lastCursorY = y;
   cursorEl.style.left = `${x}px`;
   cursorEl.style.top = `${y}px`;
-}
-
-function stageToClient(x, y) {
-  const rect = stage.getBoundingClientRect();
-  return {
-    clientX: rect.left + x,
-    clientY: rect.top + y
-  };
 }
 
 // =====================
@@ -343,6 +483,146 @@ function drawLandmarks(landmarks, t) {
   drawPoint(index.x, index.y, lerp(8, 20, t), "rgba(122,184,255,0.28)", "rgba(122,184,255,0.95)");
   drawPoint(thumb.x, thumb.y, lerp(5, 14, t), "rgba(255,124,67,0.22)", "rgba(255,124,67,0.95)");
   drawPoint(middle.x, middle.y, lerp(5, 12, t), "rgba(255,92,122,0.22)", "rgba(255,92,122,0.95)");
+}
+
+// =====================
+// Diagnostics
+// =====================
+function updateFps(nowMs) {
+  frameTimes.push(nowMs);
+  while (frameTimes.length && nowMs - frameTimes[0] > 1000) {
+    frameTimes.shift();
+  }
+  diagnostics.fps = frameTimes.length;
+}
+
+function computeVideoMetrics() {
+  const vw = video.videoWidth || 0;
+  const vh = video.videoHeight || 0;
+  diagnostics.actualWidth = vw;
+  diagnostics.actualHeight = vh;
+
+  if (!vw || !vh) return;
+
+  analysisCtx.drawImage(video, 0, 0, analysisCanvas.width, analysisCanvas.height);
+  const img = analysisCtx.getImageData(0, 0, analysisCanvas.width, analysisCanvas.height);
+  const data = img.data;
+
+  let sum = 0;
+  let sumSq = 0;
+  let blacks = 0;
+  let whites = 0;
+
+  const gray = new Float32Array(analysisCanvas.width * analysisCanvas.height);
+
+  for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+    const y = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+    gray[p] = y;
+    sum += y;
+    sumSq += y * y;
+    if (y < 20) blacks++;
+    if (y > 235) whites++;
+  }
+
+  const n = gray.length;
+  const mean = sum / n;
+  const variance = Math.max(0, sumSq / n - mean * mean);
+  const stdev = Math.sqrt(variance);
+
+  let edgeSum = 0;
+  const w = analysisCanvas.width;
+  const h = analysisCanvas.height;
+
+  for (let y = 1; y < h - 1; y += 2) {
+    for (let x = 1; x < w - 1; x += 2) {
+      const idx = y * w + x;
+      const gx = gray[idx + 1] - gray[idx - 1];
+      const gy = gray[idx + w] - gray[idx - w];
+      edgeSum += Math.abs(gx) + Math.abs(gy);
+    }
+  }
+
+  const sharpness = edgeSum / ((w * h) / 4);
+
+  diagnostics.brightness = mean;
+  diagnostics.contrast = stdev;
+  diagnostics.sharpness = sharpness;
+  diagnostics.exposureBlackPct = blacks / n;
+  diagnostics.exposureWhitePct = whites / n;
+
+  const brightOk = mean >= 65 && mean <= 195;
+  const contrastOk = stdev >= 28;
+  const sharpOk = sharpness >= 22;
+  const clippingBad = diagnostics.exposureBlackPct > 0.35 || diagnostics.exposureWhitePct > 0.20;
+
+  if (brightOk && contrastOk && sharpOk && !clippingBad) {
+    diagnostics.lighting = "good";
+  } else if ((mean >= 45 && mean <= 220) && stdev >= 18 && sharpness >= 14) {
+    diagnostics.lighting = "fair";
+  } else {
+    diagnostics.lighting = "poor";
+  }
+}
+
+function computeLandmarkJitter(landmarks) {
+  if (!lastLandmarksForJitter) {
+    lastLandmarksForJitter = landmarks.map((p) => ({ x: p.x, y: p.y }));
+    return;
+  }
+
+  let total = 0;
+  for (let i = 0; i < landmarks.length; i++) {
+    total += distance(landmarks[i], lastLandmarksForJitter[i]);
+  }
+  const meanDelta = total / landmarks.length;
+  jitterSamples.push(meanDelta);
+
+  while (jitterSamples.length > 24) jitterSamples.shift();
+  diagnostics.landmarkJitter = avg(jitterSamples);
+
+  lastLandmarksForJitter = landmarks.map((p) => ({ x: p.x, y: p.y }));
+}
+
+function chooseAdaptiveProfile() {
+  const fpsGood = diagnostics.fps >= 24;
+  const fpsPoor = diagnostics.fps < 16;
+
+  const resGood = diagnostics.actualWidth >= 1280;
+  const resPoor = diagnostics.actualWidth > 0 && diagnostics.actualWidth < 960;
+
+  const jitterGood = diagnostics.landmarkJitter > 0 && diagnostics.landmarkJitter < 0.0065;
+  const jitterPoor = diagnostics.landmarkJitter >= 0.014;
+
+  const lightingGood = diagnostics.lighting === "good";
+  const lightingPoor = diagnostics.lighting === "poor";
+
+  let next = "medium";
+
+  if ((lightingGood || diagnostics.lighting === "fair") && fpsGood && !jitterPoor && !resPoor && jitterGood) {
+    next = "good";
+  }
+
+  if (lightingPoor || fpsPoor || jitterPoor || resPoor) {
+    next = "poor";
+  }
+
+  if (next !== adaptive.profileName) {
+    applyAdaptiveProfile(next);
+    log(`PROFILE -> ${next}`);
+  }
+}
+
+function updateHud() {
+  hudResolution.textContent = diagnostics.actualWidth
+    ? `${diagnostics.actualWidth}×${diagnostics.actualHeight}`
+    : "—";
+  hudFps.textContent = diagnostics.fps ? `${diagnostics.fps}` : "—";
+  hudBrightness.textContent = `${diagnostics.brightness.toFixed(0)}`;
+  hudContrast.textContent = `${diagnostics.contrast.toFixed(0)}`;
+  hudSharpness.textContent = `${diagnostics.sharpness.toFixed(0)}`;
+  hudJitter.textContent = `${diagnostics.landmarkJitter.toFixed(4)}`;
+  hudLighting.textContent = diagnostics.lighting;
+  hudProfile.textContent = diagnostics.profile;
 }
 
 // =====================
@@ -388,7 +668,7 @@ function stabilizeHover(next, nowMs) {
     return;
   }
 
-  if (hoveredEl !== hoverCandidate && nowMs - hoverCandidateSince >= HOVER_DWELL_MS) {
+  if (hoveredEl !== hoverCandidate && nowMs - hoverCandidateSince >= adaptive.hoverDwellMs) {
     applyHovered(hoverCandidate);
   }
 }
@@ -442,7 +722,7 @@ function hideContextMenu(clearTarget = true) {
 }
 
 // =====================
-// DOM app behavior
+// DOM behavior
 // =====================
 files.forEach((file) => {
   file.addEventListener("click", () => openViewer(file));
@@ -512,55 +792,35 @@ function debouncedBinary(raw, current, onRef, offRef, onFrames, offFrames) {
   return true;
 }
 
-function leftPinchRaw(landmarks) {
-  const thumbTip = landmarks[4];
-  const indexTip = landmarks[8];
-  const hs = getHandScaleNorm(landmarks);
-  return distance(thumbTip, indexTip) / hs < LEFT_PINCH_ON;
-}
-
-function rightPinchRaw(landmarks) {
-  const thumbTip = landmarks[4];
-  const middleTip = landmarks[12];
-  const hs = getHandScaleNorm(landmarks);
-  return distance(thumbTip, middleTip) / hs < RIGHT_PINCH_ON;
-}
-
 function updateLeftPinch(landmarks) {
-  const thumbTip = landmarks[4];
-  const indexTip = landmarks[8];
   const hs = getHandScaleNorm(landmarks);
-  const d = distance(thumbTip, indexTip) / hs;
-
-  const raw = leftPinchActive ? d < LEFT_PINCH_OFF : d < LEFT_PINCH_ON;
+  const d = distance(landmarks[4], landmarks[8]) / hs;
+  const raw = leftPinchActive ? d < adaptive.leftPinchOff : d < adaptive.leftPinchOn;
 
   leftPinchActive = debouncedBinary(
     raw,
     leftPinchActive,
     { get count() { return leftOnCount; }, set count(v) { leftOnCount = v; } },
     { get count() { return leftOffCount; }, set count(v) { leftOffCount = v; } },
-    ON_FRAMES,
-    OFF_FRAMES
+    adaptive.onFrames,
+    adaptive.offFrames
   );
 
   return leftPinchActive;
 }
 
 function updateRightPinch(landmarks) {
-  const thumbTip = landmarks[4];
-  const middleTip = landmarks[12];
   const hs = getHandScaleNorm(landmarks);
-  const d = distance(thumbTip, middleTip) / hs;
-
-  const raw = rightPinchActive ? d < RIGHT_PINCH_OFF : d < RIGHT_PINCH_ON;
+  const d = distance(landmarks[4], landmarks[12]) / hs;
+  const raw = rightPinchActive ? d < adaptive.rightPinchOff : d < adaptive.rightPinchOn;
 
   rightPinchActive = debouncedBinary(
     raw,
     rightPinchActive,
     { get count() { return rightOnCount; }, set count(v) { rightOnCount = v; } },
     { get count() { return rightOffCount; }, set count(v) { rightOffCount = v; } },
-    ON_FRAMES,
-    OFF_FRAMES
+    adaptive.onFrames,
+    adaptive.offFrames
   );
 
   return rightPinchActive;
@@ -570,57 +830,35 @@ function isFingerExtended(tip, pip) {
   return tip.y < pip.y;
 }
 
-function scrollRaw(landmarks) {
-  const indexTip = landmarks[8];
-  const indexPip = landmarks[6];
-  const middleTip = landmarks[12];
-  const middlePip = landmarks[10];
-  const ringTip = landmarks[16];
-  const ringPip = landmarks[14];
-  const pinkyTip = landmarks[20];
-  const pinkyPip = landmarks[18];
-
-  const indexUp = isFingerExtended(indexTip, indexPip);
-  const middleUp = isFingerExtended(middleTip, middlePip);
-  const ringDown = ringTip.y > ringPip.y;
-  const pinkyDown = pinkyTip.y > pinkyPip.y;
+function updateScrollGesture(landmarks) {
+  const indexUp = isFingerExtended(landmarks[8], landmarks[6]);
+  const middleUp = isFingerExtended(landmarks[12], landmarks[10]);
+  const ringDown = landmarks[16].y > landmarks[14].y;
+  const pinkyDown = landmarks[20].y > landmarks[18].y;
 
   const hs = getHandScaleNorm(landmarks);
   const thumbIndexDist = distance(landmarks[4], landmarks[8]) / hs;
   const thumbMiddleDist = distance(landmarks[4], landmarks[12]) / hs;
 
-  return indexUp && middleUp && ringDown && pinkyDown && thumbIndexDist > 0.55 && thumbMiddleDist > 0.55;
-}
-
-function updateScrollGesture(landmarks) {
-  const raw = scrollRaw(landmarks);
+  const raw = indexUp && middleUp && ringDown && pinkyDown && thumbIndexDist > 0.55 && thumbMiddleDist > 0.55;
 
   scrollActive = debouncedBinary(
     raw,
     scrollActive,
     { get count() { return scrollOnCount; }, set count(v) { scrollOnCount = v; } },
     { get count() { return scrollOffCount; }, set count(v) { scrollOffCount = v; } },
-    SCROLL_ON_FRAMES,
-    SCROLL_OFF_FRAMES
+    adaptive.scrollOnFrames,
+    adaptive.scrollOffFrames
   );
 
   return scrollActive;
 }
 
-function thumbsUpRaw(landmarks) {
+function updateThumbsUp(landmarks) {
   const wrist = landmarks[0];
   const thumbTip = landmarks[4];
   const thumbIp = landmarks[3];
   const thumbMcp = landmarks[2];
-
-  const indexTip = landmarks[8];
-  const indexPip = landmarks[6];
-  const middleTip = landmarks[12];
-  const middlePip = landmarks[10];
-  const ringTip = landmarks[16];
-  const ringPip = landmarks[14];
-  const pinkyTip = landmarks[20];
-  const pinkyPip = landmarks[18];
 
   const thumbUp =
     thumbTip.y < thumbIp.y &&
@@ -628,24 +866,20 @@ function thumbsUpRaw(landmarks) {
     thumbTip.y < wrist.y;
 
   const othersFolded =
-    indexTip.y > indexPip.y &&
-    middleTip.y > middlePip.y &&
-    ringTip.y > ringPip.y &&
-    pinkyTip.y > pinkyPip.y;
+    landmarks[8].y > landmarks[6].y &&
+    landmarks[12].y > landmarks[10].y &&
+    landmarks[16].y > landmarks[14].y &&
+    landmarks[20].y > landmarks[18].y;
 
-  return thumbUp && othersFolded;
-}
-
-function updateThumbsUp(landmarks) {
-  const raw = thumbsUpRaw(landmarks);
+  const raw = thumbUp && othersFolded;
 
   thumbsUpActive = debouncedBinary(
     raw,
     thumbsUpActive,
     { get count() { return thumbsOnCount; }, set count(v) { thumbsOnCount = v; } },
     { get count() { return thumbsOffCount; }, set count(v) { thumbsOffCount = v; } },
-    THUMBS_ON_FRAMES,
-    THUMBS_OFF_FRAMES
+    adaptive.thumbsOnFrames,
+    adaptive.thumbsOffFrames
   );
 
   return thumbsUpActive;
@@ -762,6 +996,8 @@ function resetGestureStates() {
   hoverCandidate = null;
   hoverCandidateSince = 0;
   applyHovered(null);
+  lastLandmarksForJitter = null;
+  jitterSamples.length = 0;
 }
 
 function hardReset() {
@@ -795,8 +1031,8 @@ async function initHandLandmarker() {
 async function startCamera() {
   const stream = await navigator.mediaDevices.getUserMedia({
     video: {
-      width: 1280,
-      height: 720,
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
       facingMode: "user"
     }
   });
@@ -816,7 +1052,14 @@ async function startCamera() {
   running = true;
   cursorEl.classList.add("visible");
 
-  setStatus("Camera started. Hand mouse is live.");
+  const track = stream.getVideoTracks()[0];
+  if (track && !cameraInfoLogged) {
+    const settings = track.getSettings?.() || {};
+    log(`CAMERA settings requested/actual: ${JSON.stringify(settings)}`);
+    cameraInfoLogged = true;
+  }
+
+  setStatus("Camera started. Adaptive hand mouse is live.");
   log("Ready.");
 
   requestAnimationFrame(loop);
@@ -837,15 +1080,24 @@ function loop(nowMs) {
   }
   lastVideoTime = videoTime;
 
+  updateFps(nowMs);
+
+  if (nowMs - lastDiagnosticsAt > DIAGNOSTICS_INTERVAL_MS) {
+    computeVideoMetrics();
+    chooseAdaptiveProfile();
+    updateHud();
+    lastDiagnosticsAt = nowMs;
+  }
+
   const results = handLandmarker.detectForVideo(video, nowMs);
 
   if (results?.landmarks?.length) {
     lastSeenMs = nowMs;
 
     const landmarks = results.landmarks[0];
+    computeLandmarkJitter(landmarks);
 
     let { x, y } = mapNormToStage(landmarks[8]);
-
     x = xFilter.filter(x, nowMs);
     y = yFilter.filter(y, nowMs);
 
@@ -909,7 +1161,7 @@ function loop(nowMs) {
           log("SCROLL start");
         } else {
           const dy = y - scrollAnchorY;
-          scrollAccumulator += dy * 1.5;
+          scrollAccumulator += dy * adaptive.scrollMultiplier;
 
           if (Math.abs(scrollAccumulator) >= 8) {
             const deltaY = scrollAccumulator;
@@ -935,13 +1187,13 @@ function loop(nowMs) {
     if (nowMs - lastScaleLogAt > 1200) {
       lastScaleLogAt = nowMs;
       log(
-        `handScalePx(raw=${handScaleRaw.toFixed(1)} smooth=${handScaleSmooth.toFixed(1)}) left=${left} right=${right} scroll=${scroll} thumbs=${thumbs}`
+        `profile=${adaptive.profileName} fps=${diagnostics.fps} light=${diagnostics.lighting} jitter=${diagnostics.landmarkJitter.toFixed(4)} rawScale=${handScaleRaw.toFixed(1)}`
       );
     }
   } else {
     const lostFor = nowMs - lastSeenMs;
 
-    if (lostFor <= HAND_LOST_GRACE_MS) {
+    if (lostFor <= adaptive.handLostGraceMs) {
       updateCursorPose(lastCursorX, lastCursorY);
       updateCursorSize(lastT);
     } else {
