@@ -6,7 +6,7 @@
     name="viewport"
     content="width=device-width, initial-scale=1, viewport-fit=cover"
   />
-  <title>digit</title>
+  <title>Adaptive Hand Mouse</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -22,14 +22,52 @@
         <span><b>Move</b>: index finger</span>
         <span><b>Left click / drag</b>: thumb + index pinch</span>
         <span><b>Right click</b>: thumb + middle pinch</span>
-        <span><b>Scroll</b>: 2 fingers up + move hand vertically</span>
-        <span><b>Reset / release</b>: thumbs-up</span>
+        <span><b>Scroll</b>: index + middle up, move vertically</span>
+        <span><b>Reset</b>: thumbs-up</span>
       </div>
     </header>
 
     <main id="stage" class="stage">
       <video id="webcam" autoplay playsinline muted></video>
       <canvas id="overlay"></canvas>
+
+      <div id="hud" class="hud">
+        <div class="hud-title">Runtime Diagnostics</div>
+        <div class="hud-grid">
+          <div class="hud-item">
+            <span class="k">Camera</span>
+            <span id="hudResolution" class="v">—</span>
+          </div>
+          <div class="hud-item">
+            <span class="k">FPS</span>
+            <span id="hudFps" class="v">—</span>
+          </div>
+          <div class="hud-item">
+            <span class="k">Brightness</span>
+            <span id="hudBrightness" class="v">—</span>
+          </div>
+          <div class="hud-item">
+            <span class="k">Contrast</span>
+            <span id="hudContrast" class="v">—</span>
+          </div>
+          <div class="hud-item">
+            <span class="k">Sharpness</span>
+            <span id="hudSharpness" class="v">—</span>
+          </div>
+          <div class="hud-item">
+            <span class="k">Jitter</span>
+            <span id="hudJitter" class="v">—</span>
+          </div>
+          <div class="hud-item">
+            <span class="k">Lighting</span>
+            <span id="hudLighting" class="v">—</span>
+          </div>
+          <div class="hud-item">
+            <span class="k">Profile</span>
+            <span id="hudProfile" class="v">—</span>
+          </div>
+        </div>
+      </div>
 
       <div id="desktop" class="desktop" aria-label="Interactive browser desktop">
         <div class="desktop-grid">
@@ -68,7 +106,7 @@
 
           <div class="panel notes" id="notesPanel">
             <h3>Notes</h3>
-            <p>Use pinch-and-hold on a card to drag it.</p>
+            <p>Pinch-and-hold on a card to drag it.</p>
             <p>Right-pinch on a card opens the context menu.</p>
             <p>Two-finger gesture scrolls this panel.</p>
             <div class="scrollbox" id="scrollbox">
